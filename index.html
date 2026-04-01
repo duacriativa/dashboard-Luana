@@ -245,6 +245,31 @@ canvas#fireworks{position:fixed;inset:0;pointer-events:none;z-index:2999}
 .msn-item-name{font-size:11px;font-weight:500;color:var(--white);line-height:1.3}
 .msn-item-sub{font-size:10px;color:var(--gray);margin-top:1px}
 
+.sort-btn{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 10px;border-radius:20px;border:1px solid var(--br2);background:none;color:var(--gray);cursor:pointer;transition:all .15s;font-family:var(--fb)}
+.sort-btn:hover{color:var(--white);border-color:var(--white)}
+.sort-btn.active{background:var(--yellow);color:var(--black);border-color:var(--yellow)}
+
+.tcard-assignee{display:flex;align-items:center;gap:5px;margin-top:5px;padding-top:5px;border-top:1px solid var(--br)}
+.assignee-av{width:18px;height:18px;border-radius:50%;background:var(--black5);border:1px solid var(--br2);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--gray);flex-shrink:0;cursor:pointer;transition:border-color .15s}
+.assignee-av:hover{border-color:var(--yellow)}
+.assignee-name{font-size:10px;color:var(--gray);cursor:pointer}
+.assignee-name:hover{color:var(--white)}
+.assignee-unset{font-size:10px;color:var(--gray2);cursor:pointer;font-style:italic}
+.assignee-unset:hover{color:var(--gray)}
+
+.assignee-picker{position:fixed;background:var(--black3);border:1px solid var(--br2);border-radius:10px;padding:8px;z-index:1500;min-width:180px;box-shadow:0 8px 32px rgba(0,0,0,.6)}
+.assignee-picker-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;transition:background .12s}
+.assignee-picker-item:hover{background:var(--black4)}
+.assignee-picker-av{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0}
+.assignee-picker-name{font-size:12px;color:var(--white)}
+.assignee-picker-remove{font-size:11px;color:var(--danger);padding:6px 8px;border-radius:6px;cursor:pointer;text-align:center;border-top:1px solid var(--br);margin-top:4px}
+.assignee-picker-remove:hover{background:var(--danger-d)}
+
+.tcard.dragging{opacity:.4;cursor:grabbing}
+.tcard{cursor:grab}
+.tcard:active{cursor:grabbing}
+.day-tasks.drag-over{background:rgba(245,230,66,.06);border-radius:6px}
+
 /* PROGRESS BAR */
 .prog{background:var(--black2);border:1px solid var(--br);border-radius:var(--r);padding:14px 18px;margin-bottom:var(--g);display:flex;align-items:center;gap:14px}
 .plbl{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--gray);font-weight:500;white-space:nowrap;flex-shrink:0}
@@ -326,6 +351,12 @@ canvas#fireworks{position:fixed;inset:0;pointer-events:none;z-index:2999}
     <div class="leg"><div class="ldot" style="background:var(--warn)"></div>Alta</div>
     <div class="leg"><div class="ldot" style="background:var(--info)"></div>Normal</div>
     <div class="leg"><div class="ldot" style="background:var(--ok)"></div>Nova hoje</div>
+    <div class="legend-sep"></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <span style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--gray);font-weight:500">Ordenar:</span>
+      <button class="sort-btn active" id="sort-cliente" onclick="setSort('cliente')">Por cliente</button>
+      <button class="sort-btn" id="sort-urgencia" onclick="setSort('urgencia')">Por urgência</button>
+    </div>
   </div>
 
   <div class="cal-grid" id="cal-grid"></div>
@@ -468,6 +499,9 @@ let weekOffset = 0;
 let allTasks   = [];
 let seenIds    = new Set(JSON.parse(localStorage.getItem('dua_seen_luana') || '[]'));
 let nodateOpen = true;
+let sortMode   = 'cliente'; /* 'cliente' | 'urgencia' */
+let members    = []; /* workspace members cache */
+let dragPositions = JSON.parse(localStorage.getItem('dua_drag_luana') || '{}'); /* {taskId: dayKey} */
 
 /* ── UTILS ─────────────────────────────── */
 const $  = id => document.getElementById(id);
@@ -614,6 +648,7 @@ async function getSubsForList(lid) {
       listNome: null,
       url: sub.url || `https://app.clickup.com/t/${sub.id}`,
       created: parseInt(sub.date_created||0),
+      assignees: sub.assignees || [],
     });
   }
 
@@ -636,6 +671,7 @@ async function getSubsForList(lid) {
       listNome: null,
       url: t.url || `https://app.clickup.com/t/${t.id}`,
       created: parseInt(t.date_created||0),
+      assignees: t.assignees || [],
     });
   }
 
@@ -653,6 +689,12 @@ async function loadData() {
   try {
     const prevIds = new Set(seenIds);
     const raw = [];
+
+    /* Buscar membros do workspace */
+    try {
+      const mRes = await apiGet(`/team/${TEAM_ID}/member`);
+      members = (mRes.members||[]).map(m=>m.user||m).filter(Boolean);
+    } catch(e) { console.warn('Members:', e); }
 
     for(const c of CLIENTES) {
       try {
@@ -746,6 +788,20 @@ function render() {
     grid.appendChild(col);
 
     const el = col.querySelector(`#dt-${i}`);
+
+    /* Drag & Drop handlers */
+    el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('drag-over'); });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop', e => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      const taskId = e.dataTransfer.getData('taskId');
+      if(!taskId) return;
+      dragPositions[taskId] = dayKey(day);
+      localStorage.setItem('dua_drag_luana', JSON.stringify(dragPositions));
+      render();
+    });
+
     if(!dayTasks.length) {
       el.innerHTML = '<div class="empty-day">livre</div>';
     } else {
@@ -783,29 +839,52 @@ function render() {
 
     /* Agrupa por cliente, ordena clientes por data mais urgente */
     const byCliente = {};
-    for(const t of groups[tipo]) {
-      const c = t.listNome || '—';
-      if(!byCliente[c]) byCliente[c] = [];
-      byCliente[c].push(t);
-    }
-    /* Ordena cada cliente internamente por data */
-    for(const c of Object.keys(byCliente)) {
-      byCliente[c].sort((a,b) => (a.originalDue||a.due||0) - (b.originalDue||b.due||0));
-    }
-    /* Ordena os clientes pelo due mais urgente do grupo */
-    const clientesSorted = Object.keys(byCliente).sort((a,b) => {
-      const minA = Math.min(...byCliente[a].map(t => t.originalDue||t.due||Infinity));
-      const minB = Math.min(...byCliente[b].map(t => t.originalDue||t.due||Infinity));
-      return minA - minB;
-    });
-
-    for(const cliente of clientesSorted) {
-      for(const t of byCliente[cliente]) g.appendChild(buildCard(t));
+    if(sortMode === 'urgencia') {
+      /* Ordena por prioridade */
+      const po = {urgent:0,high:1,normal:2,'no-date':3};
+      const sorted = groups[tipo].sort((a,b) =>
+        (po[getPrio(a.due||0)]||3) - (po[getPrio(b.due||0)]||3)
+      );
+      for(const t of sorted) g.appendChild(buildCard(t));
+    } else {
+      /* Ordena por cliente (padrão) */
+      const byCliente = {};
+      for(const t of groups[tipo]) {
+        const c = t.listNome || '—';
+        if(!byCliente[c]) byCliente[c] = [];
+        byCliente[c].push(t);
+      }
+      for(const c of Object.keys(byCliente)) {
+        byCliente[c].sort((a,b) => (a.originalDue||a.due||0) - (b.originalDue||b.due||0));
+      }
+      const clientesSorted = Object.keys(byCliente).sort((a,b) => {
+        const minA = Math.min(...byCliente[a].map(t => t.originalDue||t.due||Infinity));
+        const minB = Math.min(...byCliente[b].map(t => t.originalDue||t.due||Infinity));
+        return minA - minB;
+      });
+      for(const cliente of clientesSorted) {
+        for(const t of byCliente[cliente]) g.appendChild(buildCard(t));
+      }
     }
     frag.appendChild(g);
   }
   return frag;
 }
+
+function setSort(mode) {
+  sortMode = mode;
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+  $(`sort-${mode}`)?.classList.add('active');
+  render();
+}
+
+function memberInitials(name) {
+  if(!name) return '?';
+  const p = name.trim().split(' ');
+  return p.length > 1 ? (p[0][0]+p[p.length-1][0]).toUpperCase() : name.slice(0,2).toUpperCase();
+}
+
+const MEMBER_COLORS = ['#7C3AED','#0F6E56','#993C1D','#185FA5','#72243E','#854F0B','#A32D2D','#3B6D11'];
 
 function buildCard(task) {
   const p     = task.due ? getPrio(task.due) : 'normal';
@@ -813,16 +892,26 @@ function buildCard(task) {
   const div   = document.createElement('div');
   div.className = `tcard ${p}`;
   div.dataset.id = task.id;
+  div.draggable = true;
+
+  /* Drag events */
+  div.addEventListener('dragstart', e => {
+    e.dataTransfer.setData('taskId', task.id);
+    div.classList.add('dragging');
+  });
+  div.addEventListener('dragend', () => div.classList.remove('dragging'));
 
   const check = document.createElement('div');
   check.className = 'tcard-check';
   check.title = 'Marcar como concluído';
   check.onclick = (e) => { e.stopPropagation(); openConfirm(task, div); };
 
-  /* badge de data real de entrega (só aparece se plannedDay != dueDay) */
   const dueBadge = (task.originalDue && task.plannedDay && !sameDay(task.originalDue, task.plannedDay))
     ? `<span class="pill-due">entrega ${fmt(new Date(task.originalDue))}</span>`
     : '';
+
+  /* Assignees */
+  const assigneeHtml = buildAssigneeHtml(task);
 
   const body = document.createElement('div');
   body.className = 'tcard-body';
@@ -833,12 +922,102 @@ function buildCard(task) {
       <span class="pill-prio ${p}">${p==='urgent'?'Urgente':p==='high'?'Alta':'Normal'}</span>
       ${dueBadge}
       ${isNew ? '<span class="pill-new">nova hoje</span>' : ''}
-    </div>`;
-  body.onclick = () => openModal(task);
+    </div>
+    ${assigneeHtml}`;
+  body.onclick = (e) => { if(!e.target.closest('.tcard-assignee')) openModal(task); };
+
+  /* Assignee click */
+  setTimeout(() => {
+    const av = body.querySelector('.assignee-trigger');
+    if(av) av.onclick = (e) => { e.stopPropagation(); openAssigneePicker(task, av); };
+  }, 0);
 
   div.appendChild(check);
   div.appendChild(body);
   return div;
+}
+
+function buildAssigneeHtml(task) {
+  const assignees = task.assignees || [];
+  if(!assignees.length) {
+    return `<div class="tcard-assignee"><span class="assignee-unset assignee-trigger">+ atribuir responsável</span></div>`;
+  }
+  const avatars = assignees.slice(0,3).map((a,i) => {
+    const color = MEMBER_COLORS[i % MEMBER_COLORS.length];
+    const name  = a.username || a.email || '?';
+    return `<div class="assignee-av assignee-trigger" style="background:${color}" title="${name}">${memberInitials(name)}</div>`;
+  }).join('');
+  const names = assignees.map(a => a.username || a.email || '?').join(', ');
+  return `<div class="tcard-assignee">${avatars}<span class="assignee-name assignee-trigger">${names}</span></div>`;
+}
+
+/* ── ASSIGNEE PICKER ─────────────────────── */
+let pickerEl = null;
+
+function openAssigneePicker(task, anchor) {
+  closeAssigneePicker();
+  const rect = anchor.getBoundingClientRect();
+  const picker = document.createElement('div');
+  picker.className = 'assignee-picker';
+  picker.style.cssText = `top:${rect.bottom+6}px;left:${rect.left}px`;
+
+  const currentIds = (task.assignees||[]).map(a=>String(a.id));
+
+  const memberList = members.length ? members : [
+    {id:112051788, username:'Luana Cruz'},
+    {id:112051786, username:'Luana Vieira'},
+    {id:112051789, username:'Isadora Coelho'},
+    {id:112051792, username:'Ciane DuaCriativa'},
+    {id:84706086,  username:'Ariela Cruz'},
+  ];
+
+  picker.innerHTML = memberList.map((m,i) => {
+    const color   = MEMBER_COLORS[i % MEMBER_COLORS.length];
+    const checked = currentIds.includes(String(m.id)) ? '✓ ' : '';
+    return `<div class="assignee-picker-item" data-id="${m.id}" data-name="${m.username||m.email||''}">
+      <div class="assignee-picker-av" style="background:${color};color:#fff">${memberInitials(m.username||m.email||'')}</div>
+      <span class="assignee-picker-name">${checked}${m.username||m.email||''}</span>
+    </div>`;
+  }).join('') + `<div class="assignee-picker-remove" onclick="removeAssignees('${task.id}')">Remover todos</div>`;
+
+  picker.querySelectorAll('.assignee-picker-item').forEach(item => {
+    item.onclick = () => toggleAssignee(task, item.dataset.id, item.dataset.name);
+  });
+
+  document.body.appendChild(picker);
+  pickerEl = picker;
+
+  setTimeout(() => document.addEventListener('click', closeAssigneePicker, {once:true}), 100);
+}
+
+function closeAssigneePicker() {
+  if(pickerEl) { pickerEl.remove(); pickerEl = null; }
+}
+
+async function toggleAssignee(task, memberId, memberName) {
+  closeAssigneePicker();
+  const current = (task.assignees||[]).map(a=>String(a.id));
+  let newAssignees;
+  if(current.includes(String(memberId))) {
+    newAssignees = task.assignees.filter(a=>String(a.id)!==String(memberId));
+  } else {
+    newAssignees = [...(task.assignees||[]), {id:memberId, username:memberName}];
+  }
+  task.assignees = newAssignees;
+  const ids = newAssignees.map(a=>Number(a.id)).filter(Boolean);
+  try {
+    await apiPut(`/task/${task.id}`, {assignees:{add:ids, rem:[]}});
+  } catch(e) { console.warn('Erro assignee:', e); }
+  render();
+}
+
+async function removeAssignees(taskId) {
+  closeAssigneePicker();
+  const task = allTasks.find(t=>t.id===taskId);
+  if(!task) return;
+  task.assignees = [];
+  try { await apiPut(`/task/${taskId}`, {assignees:{add:[], rem:[]}}); } catch(e) {}
+  render();
 }
 
 /* ── PLANEJADOR ALEXIA ──────────────────────
@@ -935,11 +1114,15 @@ function planTasks(tasks, weekDays) {
   const planned = [];
   for(const t of [...feeds, ...stories, ...outros]) {
     let pk = taskDay[t.id] || dayKey(weekDays[0]);
-    const pd = wdMap[pk];
 
-    /* Se o dia planejado já passou E não foi concluída → move para hoje */
-    if(pd && pd < today && !completedIds.has(t.id)) {
-      pk = todayKey in wdMap ? todayKey : dayKey(todayInWeek);
+    /* Drag override: se a designer moveu manualmente, respeita */
+    if(dragPositions[t.id] && wdMap[dragPositions[t.id]]) {
+      pk = dragPositions[t.id];
+    } else {
+      const pd = wdMap[pk];
+      if(pd && pd < today && !completedIds.has(t.id)) {
+        pk = todayKey in wdMap ? todayKey : dayKey(todayInWeek);
+      }
     }
 
     const finalDay = wdMap[pk] || todayInWeek;
