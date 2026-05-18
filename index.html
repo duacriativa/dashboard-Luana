@@ -372,7 +372,6 @@ canvas#fireworks{position:fixed;inset:0;pointer-events:none;z-index:2999}
       <div class="cal-controls">
         <button class="cal-nav-btn" onclick="calChangeMonth(-1)">‹</button>
         <button class="cal-nav-btn" onclick="calChangeMonth(1)">›</button>
-        <button class="cal-nav-btn" id="cal-refresh-btn" onclick="loadCalClickup()" title="Sincronizar ClickUp" style="font-size:14px">↻</button>
         <button class="cal-add-btn" onclick="openEvModal()">+ Adicionar data</button>
       </div>
     </div>
@@ -458,11 +457,18 @@ const STORE   = 'luana';
 const DATA_FIELD_ID = 'fa602b35-eaf5-47a2-b24a-97b0be692763';
 
 const CLIENTES = [
+  {nome:'Aya Fit',      listId:'901326685391'},
+  {nome:'Andirá Jeans', listId:'901324614041'},
+  {nome:'Amiche',       listId:'901324613220'},
+  {nome:'Del Carmen',   listId:'901324614474'},
   {nome:'Doce Caju',    listId:'901324614721'},
-  {nome:'Marry Blue',   listId:'901324682343'},
-  {nome:'Kyrefh Jeans', listId:'901324682326'},
+  {nome:'Eloah',        listId:'901324682275'},
   {nome:'Flora Minha',  listId:'901324682301'},
+  {nome:'Kyrefh Jeans', listId:'901324682326'},
+  {nome:'Marry Blue',   listId:'901324682343'},
   {nome:'Nina & Noz',   listId:'901324682520'},
+  {nome:'Sun Liv',      listId:'901324682532'},
+  {nome:'Naromo',       listId:'901324682471'},
   {nome:'Tchu Bi',      listId:'901324505493'},
 ];
 
@@ -704,31 +710,36 @@ function render() {
   if(newToday.length){set('new-badge-count',newToday.length);set('new-badge-plural',newToday.length===1?'':'s');badge.classList.add('visible');}
   else badge.classList.remove('visible');
 
-  /* Board: colunas por cliente */
+  /* Board: colunas por cliente — dinâmico, baseado nas tarefas carregadas */
   const board=$('board'); board.innerHTML='';
 
-  for(const c of CLIENTES) {
-    const cTasks=weekTasks.filter(t=>t.listNome===c.nome);
+  /* Pega clientes únicos das tarefas da semana, ordenados por nome */
+  const clientesNaSemana = [...new Set(weekTasks.map(t=>t.listNome).filter(Boolean))].sort();
+
+  for(const nomeCliente of clientesNaSemana) {
+    const cListId = (CLIENTES.find(c=>c.nome===nomeCliente)||{}).listId || nomeCliente.replace(/\s/g,'_');
+    const cTasks=weekTasks.filter(t=>t.listNome===nomeCliente);
     if(!cTasks.length) continue;
 
     const pending=cTasks.filter(t=>!completedIds.has(t.id));
     const total_c=cTasks.length;
     const done_c=cTasks.filter(t=>completedIds.has(t.id)).length;
     const pct_c=total_c?Math.round((done_c/total_c)*100):0;
+    const colId = `col-${cListId}`;
 
     const col=document.createElement('div');
     col.className='cli-col';
-    col.dataset.cliente=c.nome;
+    col.dataset.cliente=nomeCliente;
     col.innerHTML=`
       <div class="cli-hdr">
-        <div class="cli-name">${c.nome}</div>
+        <div class="cli-name">${nomeCliente}</div>
         <div class="cli-count">${pending.length} pendente${pending.length!==1?'s':''} · ${total_c} total</div>
         <div class="cli-pbar"><div class="cli-pfill" style="width:${pct_c}%"></div></div>
       </div>
-      <div class="cli-tasks" id="col-${c.listId}"></div>`;
+      <div class="cli-tasks" id="${colId}"></div>`;
     board.appendChild(col);
 
-    const el=col.querySelector(`#col-${c.listId}`);
+    const el=col.querySelector(`#${colId}`);
 
     el.addEventListener('dragover',  e=>{e.preventDefault();el.classList.add('drag-over');col.classList.add('drag-active');});
     el.addEventListener('dragleave', ()=>{el.classList.remove('drag-over');col.classList.remove('drag-active');});
@@ -737,15 +748,11 @@ function render() {
       const taskId=e.dataTransfer.getData('taskId');
       if(!taskId) return;
       const task=allTasks.find(t=>t.id===taskId);
-      if(task) task.listNome=c.nome;
+      if(task) task.listNome=nomeCliente;
       render();
     });
 
-    if(!cTasks.length){
-      el.innerHTML='<div class="empty-col">livre</div>';
-    } else {
-      el.appendChild(buildGrouped(cTasks));
-    }
+    el.appendChild(buildGrouped(cTasks));
   }
 
   /* Sem data */
@@ -1077,56 +1084,13 @@ window.addEventListener('DOMContentLoaded',()=>{
 /* ── CALENDAR ────────────────────────────── */
 const CAL_STORAGE_KEY = 'dua_cal_events_luana';
 let calEvents = JSON.parse(localStorage.getItem(CAL_STORAGE_KEY)||'[]');
-let calClickupEvents = []; /* tarefas do ClickUp com status "datas importantes" */
 let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth();
 let editingDate = null;
-let calLoading = false;
 
 const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
-/* Busca tarefas "Datas Importantes" do ClickUp */
-async function loadCalClickup() {
-  if(calLoading) return;
-  calLoading = true;
-  const btn = document.getElementById('cal-refresh-btn');
-  if(btn) { btn.textContent = '↻'; btn.disabled = true; btn.style.opacity = '.5'; }
-
-  calClickupEvents = [];
-  try {
-    for(const c of CLIENTES) {
-      try {
-        const res = await fetch(`https://api.clickup.com/api/v2/list/${c.listId}/task?include_closed=false&page=0`, {
-          headers: { Authorization: TOKEN }
-        });
-        const data = await res.json();
-        const tasks = (data.tasks||[]).filter(t => {
-          const s = (t.status?.status||'').toLowerCase();
-          return s.includes('datas importantes') || s.includes('datas_importantes');
-        });
-        for(const t of tasks) {
-          /* usa due_date nativo */
-          const due = parseInt(t.due_date||0);
-          if(!due) continue;
-          const d = new Date(due);
-          const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-          calClickupEvents.push({
-            date: dateStr,
-            cliente: c.nome,
-            desc: t.name,
-            url: t.url || `https://app.clickup.com/t/${t.id}`,
-            source: 'clickup'
-          });
-        }
-      } catch(e) { console.warn('Cal', c.nome, e); }
-    }
-  } finally {
-    calLoading = false;
-    if(btn) { btn.textContent = '↻'; btn.disabled = false; btn.style.opacity = '1'; }
-    renderCal();
-  }
-}
-
+/* Color map for clients — reuses existing CLI_COLORS if available */
 const CAL_CLIENT_COLORS = {
   'geral':       {bg:'rgba(245,230,66,.15)',  color:'#F5E642'},
   'Andirá Jeans':{bg:'rgba(244,114,182,.18)', color:'#F472B6'},
@@ -1151,10 +1115,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', (i===0&&tab==='board')||(i===1&&tab==='cal')));
   document.getElementById('tab-board').classList.toggle('visible', tab==='board');
   document.getElementById('tab-cal').classList.toggle('visible', tab==='cal');
-  if(tab==='cal') {
-    renderCal();
-    if(!calClickupEvents.length) loadCalClickup();
-  }
+  if(tab==='cal') renderCal();
 }
 
 function calChangeMonth(dir) {
@@ -1172,12 +1133,6 @@ function renderCal() {
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
 
-  /* Merge local + ClickUp events */
-  const allCalEvents = [
-    ...calEvents.map(e=>({...e, source:'local'})),
-    ...calClickupEvents
-  ];
-
   /* Fill leading empty cells */
   for(let i=0;i<firstDay;i++){
     const prevDate = new Date(calYear, calMonth, -firstDay+i+1);
@@ -1191,37 +1146,33 @@ function renderCal() {
   for(let d=1;d<=daysInMonth;d++){
     const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const isToday = today.getFullYear()===calYear&&today.getMonth()===calMonth&&today.getDate()===d;
-    const dayEvents = allCalEvents.filter(e=>e.date===dateStr);
+    const dayEvents = calEvents.filter(e=>e.date===dateStr);
 
     const cell = document.createElement('div');
     cell.className = 'cal-cell'+(isToday?' today':'')+(dayEvents.length?' has-events':'');
     let html = `<div class="cal-day-num">${d}</div>`;
     dayEvents.forEach(ev=>{
       const c = getCalColor(ev.cliente);
-      const icon = ev.source==='clickup' ? '⭐ ' : '';
-      const link = ev.url ? `onclick="event.stopPropagation();window.open('${ev.url}','_blank')"` : '';
-      html+=`<div class="cal-event" style="background:${c.bg};color:${c.color};${ev.url?'cursor:pointer':''}" title="${ev.desc} — ${ev.cliente}" ${link}>${icon}${ev.desc}</div>`;
+      html+=`<div class="cal-event" style="background:${c.bg};color:${c.color}" title="${ev.desc} — ${ev.cliente}">${ev.desc}</div>`;
     });
     cell.innerHTML = html;
     cell.onclick = ()=>openEvModal(dateStr);
     grid.appendChild(cell);
   }
 
-  buildCalLegend(allCalEvents);
+  /* Build legend from unique clients in this month */
+  buildCalLegend();
 }
 
-function buildCalLegend(allEvs) {
+function buildCalLegend() {
   const monthStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}`;
-  const evs = allEvs || [...calEvents, ...calClickupEvents];
-  const monthEvents = evs.filter(e=>e.date.startsWith(monthStr));
+  const monthEvents = calEvents.filter(e=>e.date.startsWith(monthStr));
   const uniqueClients = [...new Set(monthEvents.map(e=>e.cliente))];
   const legend = document.getElementById('cal-legend');
-  const hasClickup = monthEvents.some(e=>e.source==='clickup');
   legend.innerHTML = uniqueClients.map(c=>{
     const col = getCalColor(c);
     return `<div class="cal-leg"><div class="cal-leg-dot" style="background:${col.color}"></div>${c==='geral'?'Geral':c}</div>`;
-  }).join('') + (hasClickup ? '<div class="cal-leg" style="margin-left:8px;opacity:.6"><span style="font-size:10px">⭐</span> do ClickUp</div>' : '')
-  + (calLoading ? '<div class="cal-leg" style="margin-left:8px;opacity:.5">carregando…</div>' : '');
+  }).join('');
 }
 
 function populateClientSelect() {
