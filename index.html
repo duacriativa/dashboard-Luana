@@ -372,6 +372,7 @@ canvas#fireworks{position:fixed;inset:0;pointer-events:none;z-index:2999}
       <div class="cal-controls">
         <button class="cal-nav-btn" onclick="calChangeMonth(-1)">‹</button>
         <button class="cal-nav-btn" onclick="calChangeMonth(1)">›</button>
+        <button class="cal-nav-btn" id="cal-refresh-btn" onclick="loadCalClickup()" title="Sincronizar ClickUp" style="font-size:14px">↻</button>
         <button class="cal-add-btn" onclick="openEvModal()">+ Adicionar data</button>
       </div>
     </div>
@@ -1106,13 +1107,51 @@ window.addEventListener('DOMContentLoaded',()=>{
 /* ── CALENDAR ────────────────────────────── */
 const CAL_STORAGE_KEY = 'dua_cal_events_luana';
 let calEvents = JSON.parse(localStorage.getItem(CAL_STORAGE_KEY)||'[]');
+let calClickupEvents = [];
 let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth();
 let editingDate = null;
+let calLoading = false;
 
 const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
-/* Color map for clients — reuses existing CLI_COLORS if available */
+async function loadCalClickup() {
+  if(calLoading) return;
+  calLoading = true;
+  const btn = document.getElementById('cal-refresh-btn');
+  if(btn){btn.disabled=true;btn.style.opacity='.5';}
+  calClickupEvents = [];
+  const clientList = CLIENTES.length ? CLIENTES : CLIENTES_FALLBACK;
+  try {
+    for(const c of clientList) {
+      try {
+        const res = await fetch(`https://api.clickup.com/api/v2/list/${c.listId}/task?include_closed=false&page=0`,{headers:{Authorization:TOKEN}});
+        const data = await res.json();
+        const tasks = (data.tasks||[]).filter(t=>{
+          const s=(t.status?.status||'').toLowerCase();
+          return s.includes('datas importantes')||s.includes('datas_importantes');
+        });
+        for(const t of tasks){
+          const due=parseInt(t.due_date||0); if(!due) continue;
+          const d=new Date(due);
+          const dateStr=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+          calClickupEvents.push({date:dateStr,cliente:c.nome,desc:t.name,url:t.url||`https://app.clickup.com/t/${t.id}`,source:'clickup'});
+        }
+      } catch(e){console.warn('Cal',c.nome,e);}
+    }
+  } finally {
+    calLoading=false;
+    if(btn){btn.disabled=false;btn.style.opacity='1';}
+    renderCal();
+  }
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', (i===0&&tab==='board')||(i===1&&tab==='cal')));
+  document.getElementById('tab-board').classList.toggle('visible', tab==='board');
+  document.getElementById('tab-cal').classList.toggle('visible', tab==='cal');
+  if(tab==='cal'){ renderCal(); if(!calClickupEvents.length) loadCalClickup(); }
+}
 const CAL_CLIENT_COLORS = {
   'geral':       {bg:'rgba(245,230,66,.15)',  color:'#F5E642'},
   'Andirá Jeans':{bg:'rgba(244,114,182,.18)', color:'#F472B6'},
@@ -1133,13 +1172,6 @@ function getCalColor(cliente) {
   return CAL_CLIENT_COLORS[cliente] || {bg:'rgba(136,136,132,.2)', color:'#888884'};
 }
 
-function switchTab(tab) {
-  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', (i===0&&tab==='board')||(i===1&&tab==='cal')));
-  document.getElementById('tab-board').classList.toggle('visible', tab==='board');
-  document.getElementById('tab-cal').classList.toggle('visible', tab==='cal');
-  if(tab==='cal') renderCal();
-}
-
 function calChangeMonth(dir) {
   calMonth += dir;
   if(calMonth>11){calMonth=0;calYear++;}
@@ -1154,8 +1186,8 @@ function renderCal() {
   const today = new Date();
   const firstDay = new Date(calYear, calMonth, 1).getDay();
   const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
+  const allCalEvents = [...calEvents.map(e=>({...e,source:'local'})), ...calClickupEvents];
 
-  /* Fill leading empty cells */
   for(let i=0;i<firstDay;i++){
     const prevDate = new Date(calYear, calMonth, -firstDay+i+1);
     const cell = document.createElement('div');
@@ -1164,37 +1196,37 @@ function renderCal() {
     grid.appendChild(cell);
   }
 
-  /* Fill days */
   for(let d=1;d<=daysInMonth;d++){
     const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const isToday = today.getFullYear()===calYear&&today.getMonth()===calMonth&&today.getDate()===d;
-    const dayEvents = calEvents.filter(e=>e.date===dateStr);
-
+    const dayEvents = allCalEvents.filter(e=>e.date===dateStr);
     const cell = document.createElement('div');
     cell.className = 'cal-cell'+(isToday?' today':'')+(dayEvents.length?' has-events':'');
     let html = `<div class="cal-day-num">${d}</div>`;
     dayEvents.forEach(ev=>{
       const c = getCalColor(ev.cliente);
-      html+=`<div class="cal-event" style="background:${c.bg};color:${c.color}" title="${ev.desc} — ${ev.cliente}">${ev.desc}</div>`;
+      const icon = ev.source==='clickup' ? '⭐ ' : '';
+      const link = ev.url ? `onclick="event.stopPropagation();window.open('${ev.url}','_blank')"` : '';
+      html+=`<div class="cal-event" style="background:${c.bg};color:${c.color};${ev.url?'cursor:pointer':''}" title="${ev.desc} — ${ev.cliente}" ${link}>${icon}${ev.desc}</div>`;
     });
     cell.innerHTML = html;
     cell.onclick = ()=>openEvModal(dateStr);
     grid.appendChild(cell);
   }
-
-  /* Build legend from unique clients in this month */
-  buildCalLegend();
+  buildCalLegend(allCalEvents);
 }
 
-function buildCalLegend() {
+function buildCalLegend(allEvs) {
   const monthStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}`;
-  const monthEvents = calEvents.filter(e=>e.date.startsWith(monthStr));
+  const evs = allEvs || [...calEvents, ...calClickupEvents];
+  const monthEvents = evs.filter(e=>e.date.startsWith(monthStr));
   const uniqueClients = [...new Set(monthEvents.map(e=>e.cliente))];
   const legend = document.getElementById('cal-legend');
+  const hasClickup = monthEvents.some(e=>e.source==='clickup');
   legend.innerHTML = uniqueClients.map(c=>{
     const col = getCalColor(c);
     return `<div class="cal-leg"><div class="cal-leg-dot" style="background:${col.color}"></div>${c==='geral'?'Geral':c}</div>`;
-  }).join('');
+  }).join('') + (hasClickup ? '<div class="cal-leg" style="margin-left:8px;opacity:.6"><span style="font-size:10px">⭐</span> do ClickUp</div>' : '');
 }
 
 function populateClientSelect() {
