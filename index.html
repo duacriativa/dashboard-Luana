@@ -456,7 +456,11 @@ const TEAM_ID = '9013166822';
 const STORE   = 'luana';
 const DATA_FIELD_ID = 'fa602b35-eaf5-47a2-b24a-97b0be692763';
 
-const CLIENTES = [
+const FOLDER_ID = '901316459074'; /* Pasta Criação */
+let CLIENTES = []; /* preenchido dinamicamente */
+
+/* Lista hardcoded como fallback */
+const CLIENTES_FALLBACK = [
   {nome:'Aya Fit',      listId:'901326685391'},
   {nome:'Andirá Jeans', listId:'901324614041'},
   {nome:'Amiche',       listId:'901324613220'},
@@ -470,6 +474,9 @@ const CLIENTES = [
   {nome:'Sun Liv',      listId:'901324682532'},
   {nome:'Naromo',       listId:'901324682471'},
   {nome:'Tchu Bi',      listId:'901324505493'},
+  {nome:'Mandi - SSA',  listId:'901324682549'},
+  {nome:'Jenni Pink',   listId:'901324682560'},
+  {nome:'AYA - Fitness',listId:'901326685391'},
 ];
 
 const SKIP            = ['template','templates'];
@@ -647,6 +654,21 @@ async function loadData() {
   try {
     const prevIds=new Set(seenIds);
     const raw=[];
+
+    /* Busca clientes dinamicamente da pasta Criação */
+    try {
+      const folderRes = await apiGet(`/folder/${FOLDER_ID}/list?archived=false`);
+      const lists = (folderRes.lists||[]).filter(l=>
+        !l.name.toLowerCase().includes('template') &&
+        !l.name.toLowerCase().includes('[template]')
+      );
+      CLIENTES = lists.map(l=>({nome:l.name, listId:l.id}));
+      console.log(`Clientes carregados: ${CLIENTES.map(c=>c.nome).join(', ')}`);
+    } catch(e) {
+      console.warn('Erro ao buscar pasta, usando lista fixa:', e);
+      CLIENTES = CLIENTES_FALLBACK;
+    }
+
     try {
       const mRes=await apiGet(`/team/${TEAM_ID}/member`);
       members=(mRes.members||[]).map(m=>m.user||m).filter(Boolean);
